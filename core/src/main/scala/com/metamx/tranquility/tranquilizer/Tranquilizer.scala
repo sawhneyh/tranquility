@@ -354,7 +354,7 @@ class Tranquilizer[MessageType] private(
   * Exception indicating that a message was dropped "on purpose" by the beam. This is not a recoverable exception
   * and so the message must be discarded.
   */
-class MessageDroppedException private() extends Exception("Message dropped") with NoStackTrace
+class MessageDroppedException private() extends Exception("Message dropped")
 
 object MessageDroppedException
 {
