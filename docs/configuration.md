@@ -71,7 +71,7 @@ Any of these properties can be specified either globally, or per-dataSource.
 
 |Property|Description|Default|
 |--------|-----------|-------|
-|`druid.discovery.curator.path`|Curator service discovery path.|/druid/discovery|
+|`druid.discovery.curator.path`|Curator service discovery path. This is assumed to be on the same zookeeper cluster as `zookeeper.connect` refers to.|/druid/discovery|
 |`druid.selectors.indexing.serviceName`|The druid.service name of the indexing service Overlord node.|druid/overlord|
 |`druidBeam.firehoseBufferSize`|Size of buffer used by firehose to store events.|100000|
 |`druidBeam.firehoseChunkSize`|Maximum number of events to send to Druid in one HTTP request.|1000|
@@ -83,6 +83,7 @@ Any of these properties can be specified either globally, or per-dataSource.
 |`druidBeam.overlordPollPeriod`|How often to poll the Overlord for task locations. Only applies if taskLocator is "overlord".|PT20S|
 |`druidBeam.randomizeTaskId`|True if we should add a random suffix to Druid task IDs. This is useful for testing.|false|
 |`druidBeam.taskLocator`|Strategy for locating Druid tasks. Can be "curator" or "overlord".|curator|
+|`serialization.format`|Serialization format for objects sent to Druid. Can be "json" or "smile". Does not apply if you define a custom objectWriter.|json|
 |`task.partitions`|Number of Druid partitions to create.|1|
 |`task.replicants`|Number of instances of each Druid partition to create. This is the *total* number of instances, so 2 replicants means 2 tasks will be created.|1|
 |`task.warmingPeriod`|If nonzero, create Druid tasks early. This can be useful if tasks take a long time to start up in your environment.|PT0M|
@@ -92,6 +93,7 @@ Any of these properties can be specified either globally, or per-dataSource.
 |`tranquility.maxPendingBatches`|Maximum number of batches that may be in flight before we block and wait for one to finish.|5|
 |`zookeeper.connect`|ZooKeeper connect string.|none; must be provided|
 |`zookeeper.timeout`|ZooKeeper session timeout. ISO8601 duration.|PT20S|
+|`zookeeper.path`|ZooKeeper znode to use for Tranquility's internal coordination.|/tranquility/beams|
 
 ### Code
 
@@ -110,5 +112,17 @@ for any custom object type by providing your own Timestamper and ObjectWriter. S
 
 If your Druid ingestion spec requires extensions to read (perhaps you're using an aggregator that is only available in
 an extension, such as `approxHistogramFold`) then you can load them by specifying JVM properties on the command line.
-For example, add `-Ddruid.extensions.coordinates='["io.druid.extensions:druid-histogram:0.8.2"]'` to load the
-approximate histogram extension. The version should match the version of Druid that Tranquility is built with.
+The following properties are respected:
+
+|Property|Description|Default|
+|--------|-----------|-------|
+|`druid.extensions.directory`|The root extension directory where user can put extensions related files. Druid will load extensions stored under this directory.|`extensions` (This is a relative path to Druid's working directory)|
+|`druid.extensions.hadoopDependenciesDir`|The root hadoop dependencies directory where user can put hadoop related dependencies files. Druid will load the dependencies based on the hadoop coordinate specified in the hadoop index task.|`hadoop-dependencies` (This is a relative path to Druid's working directory|
+|`druid.extensions.loadList`|A JSON array of extensions to load from extension directories by Druid. If it is not specified, its value will be `null` and Druid will load all the extensions under `druid.extensions.directory`. If its value is empty list `[]`, then no extensions will be loaded at all.|null|
+|`druid.extensions.searchCurrentClassloader`|This is a boolean flag that determines if Druid will search the main classloader for extensions.  It defaults to true but can be turned off if you have reason to not automatically add all modules on the classpath.|true|
+
+For example, to load the approximate histogram extension from the `/opt/druid/extensions` directory, provide:
+
+```
+-Ddruid.extensions.loadList='["druid-histogram"]' -Ddruid.extensions.directory=/opt/druid/extensions
+```

@@ -19,15 +19,16 @@
 
 package com.metamx.tranquility.server.http
 
+import com.github.nscala_time.time.Imports._
 import com.metamx.common.lifecycle.Lifecycle
-import com.metamx.common.scala.Abort
-import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
 import com.metamx.common.scala.collection.implicits._
 import com.metamx.common.scala.collection.mutable.ConcurrentMap
 import com.metamx.common.scala.lifecycle._
 import com.metamx.common.scala.net.curator.Curator
 import com.metamx.common.scala.net.curator.Disco
+import com.metamx.common.scala.Abort
+import com.metamx.common.scala.Logging
 import com.metamx.tranquility.config.TranquilityConfig
 import com.metamx.tranquility.druid.DruidBeams
 import com.metamx.tranquility.finagle.FinagleRegistry
@@ -35,6 +36,7 @@ import com.metamx.tranquility.finagle.FinagleRegistryConfig
 import com.metamx.tranquility.server.PropertiesBasedServerConfig
 import com.twitter.app.App
 import com.twitter.app.Flag
+import io.druid.data.input.InputRow
 import java.io.FileInputStream
 import org.apache.curator.framework.CuratorFramework
 import org.eclipse.jetty.server.Server
@@ -42,7 +44,7 @@ import org.eclipse.jetty.server.ServerConnector
 import org.eclipse.jetty.servlet.ServletHandler
 import org.eclipse.jetty.servlet.ServletHolder
 import org.eclipse.jetty.util.thread.QueuedThreadPool
-import org.scala_tools.time.Imports._
+import scala.reflect.runtime.universe.typeTag
 
 object ServerMain extends App with Logging
 {
@@ -93,7 +95,7 @@ object ServerMain extends App with Logging
   {
     val curators = ConcurrentMap[String, CuratorFramework]()
     val finagleRegistries = ConcurrentMap[(String, String), FinagleRegistry]()
-    val tranquilizers = config.dataSourceConfigs strictMapValues { dataSourceConfig =>
+    val bundles = config.dataSourceConfigs strictMapValues { dataSourceConfig =>
       // Corral Zookeeper stuff
       val zookeeperConnect = dataSourceConfig.propertiesBasedConfig.zookeeperConnect
       val discoPath = dataSourceConfig.propertiesBasedConfig.discoPath
@@ -112,15 +114,17 @@ object ServerMain extends App with Logging
         }
       )
 
-      lifecycle.addManagedInstance(
-        DruidBeams.fromConfig(dataSourceConfig)
+      val tranquilizer = lifecycle.addManagedInstance(
+        DruidBeams.fromConfig(dataSourceConfig, typeTag[InputRow])
           .curator(curator)
           .finagleRegistry(finagleRegistry)
           .buildTranquilizer(dataSourceConfig.tranquilizerBuilder())
       )
+      val parseSpec = DruidBeams.makeFireDepartment(dataSourceConfig).getDataSchema.getParser.getParseSpec
+      new DataSourceBundle(tranquilizer, parseSpec)
     }
 
-    new TranquilityServlet(tranquilizers)
+    new TranquilityServlet(bundles)
   }
 
   def createJettyServer(

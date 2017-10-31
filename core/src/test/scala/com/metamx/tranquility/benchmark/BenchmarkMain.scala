@@ -19,17 +19,16 @@
 
 package com.metamx.tranquility.benchmark
 
+import com.github.nscala_time.time.Imports._
 import com.google.common.base.Charsets
 import com.google.common.io.ByteStreams
 import com.metamx.common.scala.Jackson
 import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
-import com.metamx.common.scala.net.curator.Disco
 import com.metamx.common.scala.untyped._
 import com.metamx.tranquility.beam.Beam
 import com.metamx.tranquility.beam.BeamPacketizer
 import com.metamx.tranquility.beam.BeamPacketizerListener
-import com.metamx.tranquility.beam.MessageHolder
 import com.metamx.tranquility.config.DataSourceConfig
 import com.metamx.tranquility.config.PropertiesBasedConfig
 import com.metamx.tranquility.config.TranquilityConfig
@@ -53,7 +52,6 @@ import com.twitter.util.Throw
 import java.io.ByteArrayInputStream
 import java.util.concurrent.atomic.AtomicLong
 import org.joda.time.DateTime
-import org.scala_tools.time.Imports._
 import scala.collection.JavaConverters._
 import scala.collection.Set
 
@@ -139,7 +137,7 @@ object BenchmarkMain extends Logging with CuratorRequiringSuite
         )
       )
       val wikipediaConfig: DataSourceConfig[PropertiesBasedConfig] = config.getDataSource("wikipedia")
-      val druidBeamsBuilder: DruidBeams.Builder[java.util.Map[String, AnyRef], MessageHolder[java.util.Map[String, AnyRef]]] = {
+      val druidBeamsBuilder = {
         DruidBeams
           .fromConfig(config.getDataSource("wikipedia"))
           .curator(curator)
@@ -158,9 +156,9 @@ object BenchmarkMain extends Logging with CuratorRequiringSuite
   def benchmarkTranquilizer(sender: Tranquilizer[java.util.Map[String, AnyRef]]): Unit =
   {
     var startTime: DateTime = null
-    val warmCount = 150000L
-    val count = 2000000L
-    val printEvery = 10000L
+    val warmCount = 450000L
+    val count = 5000000L
+    val printEvery = 25000L
     val sent = new AtomicLong
     val dropped = new AtomicLong
     val failed = new AtomicLong

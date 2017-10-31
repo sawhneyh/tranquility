@@ -24,6 +24,7 @@ import com.metamx.common.scala.net.curator.DiscoConfig
 import com.metamx.common.scala.untyped.Dict
 import com.metamx.tranquility.beam.ClusteredBeamTuning
 import com.metamx.tranquility.druid.DruidBeamConfig
+import com.metamx.tranquility.druid.DruidBeams
 import com.metamx.tranquility.tranquilizer.Tranquilizer
 import java.util.Properties
 import org.joda.time.Period
@@ -59,11 +60,17 @@ abstract class PropertiesBasedConfig(
   @Config(Array("task.warmingPeriod"))
   def taskWarmingPeriod: Period = ClusteredBeamTuning().warmingPeriod
 
+  @Config(Array("serialization.format"))
+  def serializationFormat: String = "json"
+
   @Config(Array("zookeeper.connect"))
   def zookeeperConnect: String
 
   @Config(Array("zookeeper.timeout"))
   def zookeeperTimeout: Period = new Period("PT20S")
+
+  @Config(Array("zookeeper.path"))
+  def zookeeperPath: String = DruidBeams.DefaultZookeeperPath
 
   @Config(Array("tranquility.maxBatchSize"))
   def tranquilityMaxBatchSize: Int = Tranquilizer.DefaultMaxBatchSize

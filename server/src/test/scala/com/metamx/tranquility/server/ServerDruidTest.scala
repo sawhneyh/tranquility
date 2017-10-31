@@ -19,52 +19,47 @@
 
 package com.metamx.tranquility.server
 
+import _root_.io.druid.data.input.InputRow
+import _root_.io.druid.data.input.impl.TimestampSpec
+import _root_.io.druid.granularity.QueryGranularities
+import _root_.io.druid.query.aggregation.LongSumAggregatorFactory
+import _root_.scala.reflect.runtime.universe.typeTag
+import com.github.nscala_time.time.Imports._
+import com.google.common.base.Charsets
 import com.metamx.common.Granularity
-import com.metamx.common.scala.Jackson
-import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
 import com.metamx.common.scala.timekeeper.TestingTimekeeper
 import com.metamx.common.scala.timekeeper.Timekeeper
 import com.metamx.common.scala.untyped.Dict
 import com.metamx.common.scala.untyped.long
+import com.metamx.common.scala.Jackson
+import com.metamx.common.scala.Logging
 import com.metamx.tranquility.beam.Beam
 import com.metamx.tranquility.beam.ClusteredBeamTuning
 import com.metamx.tranquility.beam.RoundRobinBeam
-import com.metamx.tranquility.beam.TransformingBeam
-import com.metamx.tranquility.druid.DruidBeams
-import com.metamx.tranquility.druid.DruidEnvironment
-import com.metamx.tranquility.druid.DruidLocation
-import com.metamx.tranquility.druid.DruidRollup
-import com.metamx.tranquility.druid.MultipleFieldDruidSpatialDimension
-import com.metamx.tranquility.druid.SpecificDruidDimensions
+import com.metamx.tranquility.druid._
 import com.metamx.tranquility.server.ServerDruidTest._
 import com.metamx.tranquility.server.ServerTestUtil.withTester
 import com.metamx.tranquility.test.DirectDruidTest
-import com.metamx.tranquility.test.SimpleEvent
 import com.metamx.tranquility.test.common.CuratorRequiringSuite
 import com.metamx.tranquility.test.common.DruidIntegrationSuite
-import io.druid.data.input.impl.TimestampSpec
-import io.druid.granularity.QueryGranularity
-import io.druid.query.aggregation.LongSumAggregatorFactory
 import org.apache.curator.framework.CuratorFramework
 import org.joda.time.DateTime
-import org.scala_tools.time.Imports._
 import org.scalatest.FunSuite
 import org.scalatest.ShouldMatchers
 
 class ServerDruidTest
   extends FunSuite with DruidIntegrationSuite with CuratorRequiringSuite with ShouldMatchers with Logging
 {
-  test("Server to Druid") {
+  test("Server to Druid, application/json") {
     withDruidStack {
       (curator, broker, coordinator, overlord) =>
         val now = new DateTime().hourOfDay().roundFloorCopy()
         val timekeeper = new TestingTimekeeper withEffect (_.now = now)
-        val beam = new TransformingBeam[Dict, SimpleEvent](
-          DirectDruidTest.newBuilder(curator, timekeeper).buildBeam(),
-          SimpleEvent.fromMap
-        )
-        withTester(Map(DataSource -> beam)) { tester =>
+        val config = DirectDruidTest.readDataSourceConfig(curator.getZookeeperClient.getCurrentConnectionString)
+        val beam = DruidBeams.fromConfig(config, typeTag[InputRow]).buildBeam()
+        val parseSpec = DruidBeams.makeFireDepartment(config).getDataSchema.getParser.getParseSpec
+        withTester(Map(DataSource -> beam), Map(DataSource -> parseSpec)) { tester =>
           val path = s"/v1/post/$DataSource"
           val body = Jackson.bytes(DirectDruidTest.generateEvents(now))
           val headers = Map("Content-Type" -> "application/json")
@@ -85,6 +80,34 @@ class ServerDruidTest
     }
   }
 
+  test("Server to Druid, text/plain") {
+    withDruidStack {
+      (curator, broker, coordinator, overlord) =>
+        val now = new DateTime().hourOfDay().roundFloorCopy()
+        val timekeeper = new TestingTimekeeper withEffect (_.now = now)
+        val config = DirectDruidTest.readDataSourceConfig(curator.getZookeeperClient.getCurrentConnectionString)
+        val beam = DruidBeams.fromConfig(config, typeTag[InputRow]).buildBeam()
+        val parseSpec = DruidBeams.makeFireDepartment(config).getDataSchema.getParser.getParseSpec
+        withTester(Map(DataSource -> beam), Map(DataSource -> parseSpec)) { tester =>
+          val path = s"/v1/post/$DataSource"
+          val body = DirectDruidTest.generateEvents(now).map(_.toCsv).mkString("\n").getBytes(Charsets.UTF_8)
+          val headers = Map("Content-Type" -> "text/plain")
+          tester.post(path, body, headers) {
+            tester.status should be(200)
+            tester.header("Content-Type") should startWith("application/json;")
+            Jackson.parse[Dict](tester.bodyBytes) should be(
+              Dict(
+                "result" -> Dict(
+                  "received" -> 3,
+                  "sent" -> 2
+                )
+              )
+            )
+          }
+        }
+        runTestQueriesAndAssertions(broker, timekeeper)
+    }
+  }
 }
 
 object ServerDruidTest
@@ -101,7 +124,8 @@ object ServerDruidTest
         Vector(MultipleFieldDruidSpatialDimension("coord.geo", Seq("lat", "lon")))
       ),
       IndexedSeq(new LongSumAggregatorFactory("barr", "bar")),
-      QueryGranularity.MINUTE
+      QueryGranularities.MINUTE,
+      true
     )
     val druidEnvironment = DruidEnvironment.create(
       "druid/tranquility/indexer" /* Slashes should be converted to colons */

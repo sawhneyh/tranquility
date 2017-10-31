@@ -19,6 +19,7 @@
 package com.metamx.tranquility.beam
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.github.nscala_time.time.Imports._
 import com.google.common.util.concurrent.ThreadFactoryBuilder
 import com.metamx.common.scala.Logging
 import com.metamx.common.scala.Predef._
@@ -30,20 +31,18 @@ import com.metamx.common.scala.timekeeper.Timekeeper
 import com.metamx.common.scala.untyped._
 import com.metamx.emitter.service.ServiceEmitter
 import com.metamx.tranquility.typeclass.Timestamper
-import com.twitter.util.Future
-import com.twitter.util.FuturePool
+import com.twitter.util._
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import org.apache.curator.framework.CuratorFramework
 import org.apache.curator.framework.recipes.locks.InterProcessSemaphoreMutex
 import org.apache.zookeeper.KeeperException.NodeExistsException
+import org.joda.time.chrono.ISOChronology
 import org.joda.time.DateTime
 import org.joda.time.DateTimeZone
 import org.joda.time.Interval
-import org.joda.time.chrono.ISOChronology
-import org.scala_tools.time.Implicits._
 import scala.collection.JavaConverters._
-import scala.collection.immutable.BitSet
 import scala.collection.mutable
 import scala.language.reflectiveCalls
 import scala.util.Random
@@ -187,16 +186,16 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
   private[this] def beam(timestamp: DateTime, now: DateTime): Future[Beam[EventType]] = {
     val bucket = tuning.segmentBucket(timestamp)
     val creationInterval = new Interval(
-      tuning.segmentBucket(now - tuning.windowPeriod).start.millis,
-      tuning.segmentBucket(Seq(now + tuning.warmingPeriod, now + tuning.windowPeriod).maxBy(_.millis)).end.millis,
+      tuning.segmentBucket(now - tuning.windowPeriod).start.getMillis,
+      tuning.segmentBucket(Seq(now + tuning.warmingPeriod, now + tuning.windowPeriod).maxBy(_.getMillis)).end.getMillis,
       ISOChronology.getInstanceUTC
     )
     val windowInterval = new Interval(
-      tuning.segmentBucket(now - tuning.windowPeriod).start.millis,
-      tuning.segmentBucket(now + tuning.windowPeriod).end.millis,
+      tuning.segmentBucket(now - tuning.windowPeriod).start.getMillis,
+      tuning.segmentBucket(now + tuning.windowPeriod).end.getMillis,
       ISOChronology.getInstanceUTC
     )
-    val futureBeamOption = beams.get(timestamp.millis) match {
+    val futureBeamOption = beams.get(timestamp.getMillis) match {
       case _ if !open => Future.value(None)
       case Some(x) if windowInterval.overlaps(bucket) => Future.value(Some(x))
       case Some(x) => Future.value(None)
@@ -207,7 +206,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
         // This could be more efficient, but it's happening infrequently so it's probably not a big deal.
         data.modify {
           prev =>
-            val prevBeamDicts = prev.beamDictss.getOrElse(timestamp.millis, Nil)
+            val prevBeamDicts = prev.beamDictss.getOrElse(timestamp.getMillis, Nil)
             if (prevBeamDicts.size >= tuning.partitions) {
               log.info(
                 "Merged beam already created for identifier[%s] timestamp[%s], with sufficient partitions (target = %d, actual = %d)",
@@ -233,8 +232,8 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               val numSegmentsToCover = tuning.minSegmentsPerBeam +
                 rand.nextInt(tuning.maxSegmentsPerBeam - tuning.minSegmentsPerBeam + 1)
               val intervalToCover = new Interval(
-                timestamp.millis,
-                tuning.segmentGranularity.increment(timestamp, numSegmentsToCover).millis,
+                timestamp.getMillis,
+                tuning.segmentGranularity.increment(timestamp, numSegmentsToCover).getMillis,
                 ISOChronology.getInstanceUTC
               )
               val timestampsToCover = tuning.segmentGranularity.getIterable(intervalToCover).asScala.map(_.start)
@@ -246,7 +245,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
                   // Expire old beamDicts
                   tuning.segmentGranularity.increment(new DateTime(millis)) + tuning.windowPeriod < now
               }) ++ (for (ts <- timestampsToCover) yield {
-                val tsPrevDicts = prev.beamDictss.getOrElse(ts.millis, Nil)
+                val tsPrevDicts = prev.beamDictss.getOrElse(ts.getMillis, Nil)
                 log.info(
                   "Creating new merged beam for identifier[%s] timestamp[%s] (target = %d, actual = %d)",
                   identifier,
@@ -269,10 +268,10 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
                       }
                     )
                 })
-                (ts.millis, tsNewDicts)
+                (ts.getMillis, tsNewDicts)
               })
               val newLatestCloseTime = new DateTime(
-                (Seq(prev.latestCloseTime.millis) ++ (prev.beamDictss.keySet -- newBeamDictss.keySet)).max,
+                (Seq(prev.latestCloseTime.getMillis) ++ (prev.beamDictss.keySet -- newBeamDictss.keySet)).max,
                 ISOChronology.getInstanceUTC
               )
               ClusteredBeamMeta(
@@ -295,12 +294,12 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
               // Only add the beams we actually wanted at this time. This is because there might be other beams in ZK
               // that we don't want to add just yet, on account of maybe they need their partitions expanded (this only
               // happens when they are the necessary ones).
-              if (!beams.contains(timestamp.millis) && meta.beamDictss.contains(timestamp.millis)) {
-                val beamDicts = meta.beamDictss(timestamp.millis)
+              if (!beams.contains(timestamp.getMillis) && meta.beamDictss.contains(timestamp.getMillis)) {
+                val beamDicts = meta.beamDictss(timestamp.getMillis)
                 log.info("Adding beams for identifier[%s] timestamp[%s]: %s", identifier, timestamp, beamDicts)
                 // Should have better handling of unparseable zk data. Changing BeamMaker implementations currently
                 // just causes exceptions until the old dicts are cleared out.
-                beams(timestamp.millis) = beamMergeFn(
+                beams(timestamp.getMillis) = beamMergeFn(
                   beamDicts.zipWithIndex map {
                     case (beamDict, partitionNum) =>
                       val decorate = beamDecorateFn(tuning.segmentBucket(timestamp), partitionNum)
@@ -316,7 +315,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
                 beams.remove(timestamp)
               }
               // Return requested beam. It may not have actually been created, so it's an Option.
-              beams.get(timestamp.millis) ifEmpty {
+              beams.get(timestamp.getMillis) ifEmpty {
                 log.info(
                   "Turns out we decided not to actually make beams for identifier[%s] timestamp[%s]. Returning None.",
                   identifier,
@@ -342,13 +341,14 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
     }
   }
 
-  override def sendBatch(events: Seq[EventType]): Future[BitSet] = {
+  override def sendAll(events: Seq[EventType]): Seq[Future[SendResult]] = {
     val now = timekeeper.now.withZone(DateTimeZone.UTC)
     // Events, grouped and ordered by truncated timestamp, with their original indexes remembered
-    val grouped: Seq[(DateTime, IndexedSeq[(EventType, Int)])] = (Beam.index(events) groupBy {
-      case (event, index) =>
+    val eventsWithPromises = Vector() ++ events.map(event => (event, Promise[SendResult]()))
+    val grouped: Seq[(DateTime, IndexedSeq[(EventType, Promise[SendResult])])] = (eventsWithPromises groupBy {
+      case (event, promise) =>
         tuning.segmentBucket(timestamper(event)).start
-    }).toSeq.sortBy(_._1.millis)
+    }).toSeq.sortBy(_._1.getMillis)
     // Possibly warm up future beams
     def toBeWarmed(dt: DateTime, end: DateTime): List[DateTime] = {
       if (dt <= end) {
@@ -358,10 +358,10 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
       }
     }
     val latestEventTimestamp: Option[DateTime] = grouped.lastOption map { case (truncatedTimestamp, group) =>
-      val event: EventType = group.maxBy(tuple => timestamper(tuple._1).millis)._1
+      val event: EventType = group.maxBy(tuple => timestamper(tuple._1).getMillis)._1
       timestamper(event)
     }
-    val warmingBeams = Future.collect(
+    val warmingBeams: Future[Seq[Beam[EventType]]] = Future.collect(
       for (
         latest <- latestEventTimestamp.toList;
         tbwTimestamp <- toBeWarmed(latest, latest + tuning.warmingPeriod) if tbwTimestamp > latest
@@ -370,59 +370,85 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
         beam(tbwTimestamp, now)
       }
     )
-    // Propagate data
-    val futures: Seq[Future[BitSet]] = for ((timestamp, eventGroup) <- grouped) yield {
-      beam(timestamp, now) onFailure {
-        e =>
+    // Send data
+    for ((timestamp, eventGroup) <- grouped) {
+      val futureOfFutures: Future[Seq[Future[SendResult]]] = beam(timestamp, now) transform {
+        case Throw(e) =>
+          // Could not generate beam, fail everything.
           emitAlert(e, log, emitter, WARN, "Failed to create merged beam: %s" format identifier, alertMap)
-      } flatMap {
-        beam =>
-          // We expect beams to handle retries, so if we get an exception here let's drop the batch
-          beam.sendBatch(eventGroup.map(_._1)) map { bitset =>
-            // Remap indexes
-            bitset.map(index => eventGroup(index)._2)
-          } rescue {
-            case e: DefunctBeamException =>
-              // Just drop data until the next segment starts. At some point we should look at doing something
-              // more intelligent.
-              emitAlert(
-                e, log, emitter, WARN, "Beam defunct: %s" format identifier,
-                alertMap ++
-                  Dict(
-                    "eventCount" -> eventGroup.size,
-                    "timestamp" -> timestamp.toString(),
-                    "beam" -> beam.toString
-                  )
-              )
-              data.modify {
-                prev =>
-                  ClusteredBeamMeta(
-                    Seq(prev.latestCloseTime, timestamp).maxBy(_.millis),
-                    prev.beamDictss - timestamp.millis
-                  )
-              } onSuccess {
-                meta =>
-                  beamWriteMonitor.synchronized {
-                    beams.remove(timestamp.millis)
-                  }
-              } map (_ => BitSet.empty)
+          val throwMe = new IllegalStateException(s"Failed to create merged beam: $identifier", e)
+          Future.value(eventGroup.map(_ => Future.exception(throwMe)))
 
-            case e: Exception =>
-              emitAlert(
-                e, log, emitter, WARN, "Failed to propagate events: %s" format identifier,
-                alertMap ++
-                  Dict(
-                    "eventCount" -> eventGroup.size,
-                    "timestamp" -> timestamp.toString(),
-                    "beams" -> beam.toString
+        case Return(theBeam) =>
+          // We expect beams to handle retries, so if we get an exception here let's convert them to drops.
+          val rawFutures: Seq[Future[SendResult]] = theBeam.sendAll(eventGroup.map(_._1))
+          val sawDefunct = new AtomicBoolean
+          val sawOtherException = new AtomicBoolean
+
+          val rescuedFutures = for (rawFuture <- rawFutures) yield {
+            // Error handling
+            rawFuture rescue {
+              case e: DefunctBeamException =>
+                if (sawDefunct.compareAndSet(false, true)) {
+                  emitAlert(
+                    e, log, emitter, WARN, "Beam defunct: %s" format identifier,
+                    alertMap ++
+                      Dict(
+                        "eventCount" -> eventGroup.size,
+                        "timestamp" -> timestamp.toString(),
+                        "beam" -> theBeam.toString
+                      )
                   )
-              )
-              Future.value(BitSet.empty)
+                  data.modify {
+                    prev =>
+                      ClusteredBeamMeta(
+                        Seq(prev.latestCloseTime, timestamp).maxBy(_.getMillis),
+                        prev.beamDictss - timestamp.getMillis
+                      )
+                  } onSuccess {
+                    meta =>
+                      beamWriteMonitor.synchronized {
+                        beams.remove(timestamp.getMillis)
+                      }
+                  } map (_ => SendResult.Dropped)
+                } else {
+                  Future(SendResult.Dropped)
+                }
+
+              case e: Exception =>
+                if (sawOtherException.compareAndSet(false, true)) {
+                  emitAlert(
+                    e, log, emitter, WARN, "Failed to propagate events: %s" format identifier,
+                    alertMap ++
+                      Dict(
+                        "eventCount" -> eventGroup.size,
+                        "timestamp" -> timestamp.toString(),
+                        "beams" -> theBeam.toString
+                      )
+                  )
+                }
+                Future(SendResult.Dropped)
+            }
           }
+
+          Future.value(rescuedFutures)
+      }
+
+      futureOfFutures onSuccess { futures =>
+        for (((event, promise), future) <- eventGroup zip futures) {
+          promise.become(future)
+        }
+      } onFailure { e =>
+        log.error(e, "WTF?! Did not expect futureOfFutures to fail...")
+        for ((event, promise) <- eventGroup) {
+          promise.setException(e)
+        }
       }
     }
-    val future = Future.collect(futures).map(Beam.mergeBitsets)
-    warmingBeams.flatMap(_ => future) // Resolve only when future beams are warmed up.
+    eventsWithPromises map { case (event, promise) =>
+      // Resolve only when future beams are warmed up.
+      warmingBeams.flatMap(_ => promise)
+    }
   }
 
   def close() = {
@@ -441,7 +467,7 @@ class ClusteredBeam[EventType: Timestamper, InnerBeamType <: Beam[EventType]](
   * Metadata stored in ZooKeeper for a ClusteredBeam.
   *
   * @param latestCloseTime Most recently shut-down interval (to prevent necromancy).
-  * @param beamDictss Map of interval start -> beam metadata, partition by partition.
+  * @param beamDictss      Map of interval start -> beam metadata, partition by partition.
   */
 case class ClusteredBeamMeta(latestCloseTime: DateTime, beamDictss: Map[Long, Seq[Dict]])
 {
@@ -449,7 +475,7 @@ case class ClusteredBeamMeta(latestCloseTime: DateTime, beamDictss: Map[Long, Se
     Dict(
       // latestTime is only being written for backwards compatibility
       "latestTime" -> new DateTime(
-        (Seq(latestCloseTime.millis) ++ beamDictss.map(_._1)).max,
+        (Seq(latestCloseTime.getMillis) ++ beamDictss.map(_._1)).max,
         ISOChronology.getInstanceUTC
       ).toString(),
       "latestCloseTime" -> latestCloseTime.toString(),
@@ -469,7 +495,7 @@ object ClusteredBeamMeta
         case (k, vs) =>
           val ts = new DateTime(k, ISOChronology.getInstanceUTC)
           val beamDicts = list(vs) map (dict(_))
-          (ts.millis, beamDicts)
+          (ts.getMillis, beamDicts)
       }
       val latestCloseTime = new DateTime(d.getOrElse("latestCloseTime", 0L), ISOChronology.getInstanceUTC)
       Right(ClusteredBeamMeta(latestCloseTime, beams))
